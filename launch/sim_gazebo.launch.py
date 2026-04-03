@@ -63,18 +63,10 @@ def generate_launch_description():
         output='screen'
     )
 
-    # 6. FGM Local Planner (Formerly Lino Tactical)
-    lino_node = Node(
+    # 6. APF Local Planner
+    apf_node = Node(
         package='robot',
-        executable='planner_local_fgm',
-        output='screen',
-        parameters=[{'use_sim_time': True}]
-    )
-
-    # 7. A* Global Navigation
-    astar_node = Node(
-        package='robot',
-        executable='planner_global_astar',
+        executable='planner_local_apf',
         output='screen',
         parameters=[{'use_sim_time': True}]
     )
@@ -94,7 +86,6 @@ def generate_launch_description():
         rsp,
         spawn,
         bridge,
-        lino_node,
-        astar_node,
+        apf_node,
         rviz
     ])
