@@ -24,11 +24,13 @@ class APFPlannerNode(Node):
         self.declare_parameter('v_max', 0.7, ParameterDescriptor(description='Max linear velocity'))
         self.declare_parameter('w_max', 6.0, ParameterDescriptor(description='Max angular velocity (TURBO)'))
         self.declare_parameter('nav_mode', 0, ParameterDescriptor(description='0: Standard APF, 1: Harmonic (Trap-Free)'))
+        self.declare_parameter('cluster_dist', 0.25, ParameterDescriptor(description='Threshold for jump-clustering LIDAR points'))
 
         # Publishers
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.marker_pub = self.create_publisher(MarkerArray, '/force_markers', 10)
         self.pub_nav_markers = self.create_publisher(MarkerArray, '/navigation_markers', 10)
+        self.pub_obs_markers = self.create_publisher(MarkerArray, '/detected_obstacles', 10)
         
         # Subscribers
         self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
@@ -105,6 +107,56 @@ class APFPlannerNode(Node):
         marker.scale.z = 0.01
         marker.color = ColorRGBA(r=0.0, g=0.5, b=1.0, a=0.2) # Transparent Blue
         return marker
+
+    def cluster_obstacles(self, msg):
+        """Perform Jump-Distance clustering on raw LIDAR scan."""
+        if not msg: return []
+        
+        ranges = np.array(msg.ranges)
+        angles = np.linspace(msg.angle_min, msg.angle_max, len(ranges))
+        cluster_dist = self.get_parameter('cluster_dist').value
+        
+        clusters = []
+        current_cluster = []
+        
+        for i in range(len(ranges)):
+            r = ranges[i]
+            if not (0.1 < r < 5.0): # Skip noise
+                if current_cluster:
+                    clusters.append(current_cluster)
+                    current_cluster = []
+                continue
+            
+            p_x = r * math.cos(angles[i])
+            p_y = r * math.sin(angles[i])
+            point = np.array([p_x, p_y])
+            
+            if not current_cluster:
+                current_cluster.append(point)
+            else:
+                last_point = current_cluster[-1]
+                dist = np.linalg.norm(point - last_point)
+                if dist < cluster_dist:
+                    current_cluster.append(point)
+                else:
+                    clusters.append(current_cluster)
+                    current_cluster = [point]
+        
+        if current_cluster: clusters.append(current_cluster)
+        
+        # 2. Geometric Feature Extraction
+        obstacles = []
+        for c in clusters:
+            points = np.array(c)
+            centroid = np.mean(points, axis=0) # [X, Y] in Body Frame
+            # Radius is max distance from centroid to any point in cluster
+            radius = np.max(np.linalg.norm(points - centroid, axis=1)) 
+            obstacles.append({
+                'center': centroid,
+                'radius': max(0.05, radius) # Minimum size for point obstacles
+            })
+        
+        return obstacles
 
     def control_loop(self):
         if self.current_pose is None:
@@ -233,32 +285,33 @@ class APFPlannerNode(Node):
         else:
             self.current_d0 = d0_raw
 
-        # 4. Repulsion & "Revolving" Vortex Force
+        # 4. Geometric Repulsion (Cluster-Based)
         f_rep_x, f_rep_y = 0.0, 0.0
-        nav_mode = self.get_parameter('nav_mode').value
-
-        if self.latest_scan is not None:
-            angle = self.latest_scan.angle_min
-            for r in self.latest_scan.ranges:
-                if 0.1 < r < self.current_d0:
-                    r_edge = max(0.01, r - robot_radius)
-                    d0_edge = max(0.02, self.current_d0 - robot_radius)
-                    
-                    if r_edge < d0_edge:
-                        # Repulsion
-                        rep_mag = k_rep * (1.0/r_edge - 1.0/d0_edge) * (1.0/(r_edge**2))
-                        rep_mag = min(rep_mag, 10.0) # Softer clamp for smoother slide
-                        
-                        f_rep_x -= rep_mag * math.cos(angle)
-                        f_rep_y -= rep_mag * math.sin(angle)
-                        
-                        # "Revolving" Vortex Force (Sliding around Point B)
-                        side = 1.0 if angle > 0 else -1.0
-                        # Increase slide force as we get closer to obstacle
-                        vortex_gain = k_curl * (1.5 / (r_edge + 0.1))
-                        f_rep_x += vortex_gain * rep_mag * math.sin(angle) * side
-                        f_rep_y -= vortex_gain * rep_mag * math.cos(angle) * side
-                angle += self.latest_scan.angle_increment
+        self.detected_obstacles = self.cluster_obstacles(self.latest_scan)
+        
+        for obs in self.detected_obstacles:
+            cx, cy = obs['center'][0], obs['center'][1]
+            rad = obs['radius']
+            dist_to_center = math.sqrt(cx**2 + cy**2)
+            
+            # Distance from robot edge to obstacle "surface"
+            r_surface = max(0.02, dist_to_center - (rad + robot_radius))
+            d0_limit = self.current_d0
+            
+            if r_surface < d0_limit:
+                # Geometric Repulsion Magnitude
+                rep_mag = k_rep * (1.0/r_surface - 1.0/d0_limit) * (1.0/r_surface**2)
+                rep_mag = min(rep_mag, 15.0) # slightly higher cap for clusters
+                
+                angle_to_obs = math.atan2(cy, cx)
+                f_rep_x -= rep_mag * math.cos(angle_to_obs)
+                f_rep_y -= rep_mag * math.sin(angle_to_obs)
+                
+                # Dynamic "Revolving" Vortex Force
+                side = 1.0 if cy > 0 else -1.0
+                vortex_gain = k_curl * (2.0 / (r_surface + 0.1))
+                f_rep_x += vortex_gain * rep_mag * math.sin(angle_to_obs) * side
+                f_rep_y -= vortex_gain * rep_mag * math.cos(angle_to_obs) * side
 
         # 5. Total Force Integration (Body Frame Mixing)
         # f_rep and f_gap are natively in Body Frame (LiDAR relative)
@@ -346,9 +399,28 @@ class APFPlannerNode(Node):
             p_stamped.header.stamp = self.get_clock().now().to_msg()
             p_stamped.pose = self.current_pose
             self.actual_path.poses.append(p_stamped)
-            if len(self.actual_path.poses) > 250:
-                self.actual_path.poses.pop(0)
             self.trail_pub.publish(self.actual_path)
+            
+        # 4. Detected Obstacles (Geometric Visualization)
+        if hasattr(self, 'detected_obstacles'):
+            obs_markers = MarkerArray()
+            for i, obs in enumerate(self.detected_obstacles):
+                m = Marker()
+                m.header.frame_id = "base_footprint"
+                m.header.stamp = self.get_clock().now().to_msg()
+                m.ns = "detections"
+                m.id = i
+                m.type = Marker.CYLINDER
+                m.action = Marker.ADD
+                m.pose.position.x = obs['center'][0]
+                m.pose.position.y = obs['center'][1]
+                m.pose.position.z = 0.05
+                m.scale.x = obs['radius'] * 2.0
+                m.scale.y = obs['radius'] * 2.0
+                m.scale.z = 0.1
+                m.color = ColorRGBA(r=0.0, g=0.8, b=1.0, a=0.3) # Semi-transparent Light Blue
+                obs_markers.markers.append(m)
+            self.pub_obs_markers.publish(obs_markers)
         
         self.marker_pub.publish(markers)
         
