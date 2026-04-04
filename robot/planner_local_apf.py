@@ -229,7 +229,7 @@ class APFPlannerNode(Node):
             # Harmonic Field Diagnostics
             trap_stat = "[CLEAR]" if not hasattr(self, '_stuck_ref') else "[TRAP DETECTED]"
             
-            self.get_logger().info("\n" + "🎓 "*15 + 
+            self.get_logger().info("\n" + "="*15 + 
                                    f"\n[ACADEMIC METRICS] Status: {trap_stat}" +
                                    f"\n[ROBOT STATE]  Pos: ({self.current_pose.position.x:.2f}, {self.current_pose.position.y:.2f}) | Yaw: {yaw_deg:.1f}°" +
                                    f"\n[NAVIGATION]   Target: {type_str} | dist: {dist_to_goal:.2f}m" +
