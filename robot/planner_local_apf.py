@@ -79,7 +79,7 @@ class APFPlannerNode(Node):
             self.get_logger().info("Odometry Heartbeat [OK]")
 
     def goal_callback(self, msg):
-        # We still accept direct goals, but A* /plan will override them
+        # We still accept direct goals, but  /plan will override them
         self.goal_pose = msg.pose
         self.waypoints = []
         self.get_logger().info(f"Direct APF Goal: {msg.pose.position.x}, {msg.pose.position.y}")
@@ -87,7 +87,7 @@ class APFPlannerNode(Node):
     def path_callback(self, msg):
         self.waypoints = msg.poses
         self.goal_pose = None
-        self.get_logger().info(f"Received A* Path with {len(self.waypoints)} waypoints.")
+        self.get_logger().info(f"Received  Path with {len(self.waypoints)} waypoints.")
 
     def scan_callback(self, msg):
         """Update the latest LIDAR scan data."""
@@ -240,7 +240,7 @@ class APFPlannerNode(Node):
             if len(self.waypoints) > 0:
                 self.waypoints.pop(0)
                 if len(self.waypoints) == 0:
-                    self.get_logger().info("Final A* Waypoint Reached!")
+                    self.get_logger().info("Final Waypoint Reached!")
                     self.stop_robot()
             else:
                 self.get_logger().info("Direct Goal Reached!")
