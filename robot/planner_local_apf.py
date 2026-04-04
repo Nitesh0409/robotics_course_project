@@ -11,7 +11,7 @@ import numpy as np
 
 class APFPlannerNode(Node):
     """
-    Advanced Artificial Potential Field (APF) Navigation Node.
+    Artificial Potential Field (APF) Navigation Node.
     
     This implementation utilizes vector-field gradients to generate autonomous 
     trajectories for holonomic Mecanum-wheeled systems. The navigation logic 
